@@ -92,18 +92,21 @@ getExnMsg (UserExn msg) = msg
 
 instance Exception GetExn
 
-instance (Functor m) => Functor (Get m) where
-  fmap f (Get k) = Get \b i -> fmap f (k b i)
+-- Strict in the decoded value: each result is evaluated to its outer constructor as it is
+-- decoded. Built lazily through the underlying monad, a loaded program kept every value as an
+-- unevaluated application for its whole life: about four fifths of a compiled program's heap.
+instance (Monad m) => Functor (Get m) where
+  fmap f (Get k) = Get \b i -> k b i >>= \x -> pure $! f x
   {-# INLINE fmap #-}
-  x <$ Get k = Get \b i -> x <$ k b i
+  x <$ Get k = Get \b i -> k b i >> (pure $! x)
   {-# INLINE (<$) #-}
 
-instance (Applicative m) => Applicative (Get m) where
+instance (Monad m) => Applicative (Get m) where
   pure x = Get \_ _ -> pure x
   {-# INLINE pure #-}
-  Get kf <*> Get kx = Get \b i -> kf b i <*> kx b i
+  Get kf <*> Get kx = Get \b i -> kf b i >>= \f -> kx b i >>= \x -> pure $! f x
   {-# INLINE (<*>) #-}
-  liftA2 f (Get kx) (Get ky) = Get \b i -> liftA2 f (kx b i) (ky b i)
+  liftA2 f (Get kx) (Get ky) = Get \b i -> kx b i >>= \x -> ky b i >>= \y -> pure $! f x y
   {-# INLINE liftA2 #-}
   Get kx *> Get ky = Get \b i -> kx b i *> ky b i
   {-# INLINE (*>) #-}
@@ -134,7 +137,7 @@ getWord8 = Get \bs (Ix ix) ->
   readPrimVar ix >>= \case
     i
       | i < BS.length bs ->
-          BS.unsafeIndex bs i <$ writePrimVar ix (i + 1)
+          writePrimVar ix (i + 1) >> (pure $! BS.unsafeIndex bs i)
       | otherwise -> throw $ InsufficientBytes "getWord8"
 {-# INLINE getWord8 #-}
 
@@ -158,7 +161,7 @@ buildVarInt bs ix i0
     eat !i !acc !sh !m
       | not $ testBit m 7,
         acc <- acc .|. (m !<<. sh) =
-          acc <$ writePrimVar ix i
+          writePrimVar ix i >> (pure $! acc)
       | i < sz,
         acc <- acc .|. (clearBit m 7 !<<. sh) =
           eat (i + 1) acc (sh + 7) $ grab i
@@ -170,7 +173,7 @@ getInt64be :: (PrimBase m) => Get m Int64
 getInt64be = Get \bs (Ix ix) ->
   readPrimVar ix >>= \case
     i
-      | i + 7 < BS.length bs -> build bs i <$ writePrimVar ix (i + 8)
+      | i + 7 < BS.length bs -> writePrimVar ix (i + 8) >> (pure $! build bs i)
       | otherwise -> throw $ InsufficientBytes "getInt64be"
   where
     build bs !i =
@@ -189,7 +192,7 @@ getWord16be :: (PrimBase m) => Get m Word16
 getWord16be = Get \bs (Ix ix) ->
   readPrimVar ix >>= \case
     i
-      | i + 1 < BS.length bs -> build bs i <$ writePrimVar ix (i + 2)
+      | i + 1 < BS.length bs -> writePrimVar ix (i + 2) >> (pure $! build bs i)
       | otherwise -> throw $ InsufficientBytes "getWord16be"
   where
     build bs !i =
@@ -202,7 +205,7 @@ getWord32be :: (PrimBase m) => Get m Word32
 getWord32be = Get \bs (Ix ix) ->
   readPrimVar ix >>= \case
     i
-      | i + 3 < BS.length bs -> build bs i <$ writePrimVar ix (i + 4)
+      | i + 3 < BS.length bs -> writePrimVar ix (i + 4) >> (pure $! build bs i)
       | otherwise -> throw $ InsufficientBytes "getWord32be"
   where
     build bs !i =
@@ -217,7 +220,7 @@ getWord64be :: (PrimBase m) => Get m Word64
 getWord64be = Get \bs (Ix ix) ->
   readPrimVar ix >>= \case
     i
-      | i + 7 < BS.length bs -> build bs i <$ writePrimVar ix (i + 8)
+      | i + 7 < BS.length bs -> writePrimVar ix (i + 8) >> (pure $! build bs i)
       | otherwise -> throw $ InsufficientBytes "getWord64be"
   where
     build bs !i =
@@ -236,7 +239,7 @@ getWord64le :: (PrimBase m) => Get m Word64
 getWord64le = Get \bs (Ix ix) ->
   readPrimVar ix >>= \case
     i
-      | i + 7 < BS.length bs -> build bs i <$ writePrimVar ix (i + 8)
+      | i + 7 < BS.length bs -> writePrimVar ix (i + 8) >> (pure $! build bs i)
       | otherwise -> throw $ InsufficientBytes "getWord64be"
   where
     build bs !i =
@@ -263,7 +266,7 @@ getByteString :: (PrimBase m) => Int -> Get m ByteString
 getByteString n = Get \bs (Ix ix) -> do
   i <- readPrimVar ix
   if i + n <= BS.length bs
-    then BS.unsafeTake n (BS.unsafeDrop i bs) <$ writePrimVar ix (i + n)
+    then writePrimVar ix (i + n) >> (pure $! BS.unsafeTake n (BS.unsafeDrop i bs))
     else throw $ InsufficientBytes "getBytes"
 {-# INLINEABLE getByteString #-}
 
